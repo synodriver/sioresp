@@ -153,26 +153,26 @@ class RedisRespDecoder:
                 # Still more data needed to fill aggregate response
                 if last_array[0] != len(last_array[1]):
                     break
-                # Result is an array
+                # BaseEvent is an array
                 if last_array[2] == 0:
                     msg_type = Array
                     msg = last_array[1]
-                # Result is an map
+                # BaseEvent is an map
                 elif last_array[2] == 1:
                     msg_type = Map
                     i = iter(last_array[1])
                     # TODO (misc) is this the best way to deal with y ?
                     msg = OrderedDict([(bytes(y) if y.__hash__ is None else y, next(i)) for y in i])
-                # Result is an set
+                # BaseEvent is an set
                 elif last_array[2] == 2:
                     msg_type = Set
                     msg = set(last_array[1])
-                # Result is an attribute
+                # BaseEvent is an attribute
                 elif last_array[2] == 3:
                     i = iter(last_array[1])
                     # TODO (misc) is this the best way to deal with y ?
                     last_attribute = OrderedDict([(bytes(y) if y.__hash__ is None else y, next(i)) for y in i])
-                # Result is an push
+                # BaseEvent is an push
                 elif last_array[2] == 4:
                     msg_type = Push
                     msg = last_array[1]

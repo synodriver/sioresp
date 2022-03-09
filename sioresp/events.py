@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
-from typing import Union
+import decimal
+from typing import Union, Optional
 
 
 class NeedMoreData:
@@ -7,16 +8,15 @@ class NeedMoreData:
 
 
 @dataclass
-class Result:
-    data: Union[bytes, bytearray]
-
-    def __repr__(self):
-        rep = "%s: %s " % (type(self).__name__, self.data)
-        return rep
+class BaseEvent:
+    pass
 
 
 @dataclass
-class String(Result):
+class String(BaseEvent):
+    data: Union[bytes, bytearray]
+    len: Optional[int] = None
+
     def __str__(self):
         return self.data.decode()
 
@@ -25,56 +25,78 @@ class String(Result):
 
 
 @dataclass
-class ReplyError(Result, Exception):
+class ReplyError(BaseEvent, Exception):
+    data: Union[bytes, bytearray]
+
     def __str__(self):
         return self.data.decode()
 
+    def __bytes__(self):
+        return bytes(self.data)
+
 
 @dataclass
-class Integer(Result):
+class Integer(BaseEvent):
+    data: Union[bytes, bytearray]
+
     def __int__(self):
         return int(self.data.decode())
 
 
 @dataclass
-class Null(Result):
+class Null(BaseEvent):
     pass
 
 
 @dataclass
-class Double(Result):
-    pass
+class Double(BaseEvent):
+    data: Union[bytes, bytearray]
+
+    def __float__(self):
+        return float(self.data.decode())
 
 
 @dataclass
-class Boolean(Result):
-    pass
+class Boolean(BaseEvent):
+    data: Union[bytes, bytearray]
+
+    def __bool__(self):
+        if bytes(self.data) == b"t":
+            return True
+        elif bytes(self.data) == b"f":
+            return False
 
 
 @dataclass
-class BigNumber(Result):
-    pass
+class BigNumber(BaseEvent):  # todo decimal?
+    data: Union[bytes, bytearray]
+
+    def __int__(self):
+        return int(self.data.decode())
 
 
 @dataclass
-class Array(Result, list):
-    data: bytes = field(default=None, init=False)
-    len: int = None
+class Array(BaseEvent):
+    len: int
+    data: list = field(default_factory=list)
 
 
 @dataclass
-class Map(Result):
-    pass
+class Map(BaseEvent):
+    len: int
+    data: dict = field(default_factory=dict)
 
 
 @dataclass
-class Set(Result):
-    pass
+class Set(BaseEvent):
+    len: int
+    data: set = field(default_factory=set)
 
 
 @dataclass
-class Push(Result):
-    pass
+class Push(BaseEvent):
+    len: int
+    data: set = field(default_factory=list)
 
 
 need_more_data = NeedMoreData()

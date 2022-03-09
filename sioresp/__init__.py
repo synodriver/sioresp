@@ -1,8 +1,10 @@
 from enum import Enum, auto
+from collections import deque
+from typing import Union
 
 from sioresp.config import Config
 from sioresp.buffer import Buffer
-from sioresp.events import Result, String, ReplyError, Integer, Array
+from sioresp.events import BaseEvent, String, ReplyError, Integer, Array, need_more_data
 from sioresp.exceptions import ProtocolError
 
 try:
@@ -26,133 +28,147 @@ big_number_start = 40  # b"("
 map_start = 37  # b"%"
 set_start = 126  # b'~'
 attribute_start = 124  # struct  b"|"
-# todo
-push_start = 0
-hello_start = 0
+push_start = 62
 
 CRLF = b"\r\n"
 
 
 class ParserState(Enum):
     wait_data = auto()  # 现在还没有开始读取
-    read_string = auto()
-    read_error = auto()
-    read_integer = auto()
-    read_bulk_string_len = auto()
     read_bulk_string_body = auto()
-    read_array_len = auto()
-    read_array_body = auto()
+
+
+# def parse_string(x: String):
+#     if x.len is None:
+#         return str(x)
+#     else:
+#         return None
 
 
 class Connection:
+    post_processors = {
+        String: lambda x: bytes(x) if x.len is None else None,  # len不是None就是-1 这里把-1长度的str也视为None
+        ReplyError: lambda x: x,
+        Integer: lambda x: int(x)
+    }
+
     def __init__(self, config: Config):
         self.config = config
         self._buffer = Buffer()
-        self._parser_states = [ParserState.wait_data]
-        self._current_lengths = [None]
-        self._current_ret = []
+        self._events = deque()
+        self._events_backup = deque()  # stack
+        self._parser_state = ParserState.wait_data
+        self._current_length = None  # type: Optional[int]
 
-    def feed_data(self, data: bytes):
+    def feed_data(self, data: Union[bytes, bytearray]) -> None:
         assert data, "no data at all"
         self._buffer.extend(data)
 
-        def parse(_ret: list) -> None:
-            if self._parser_states[-1] == ParserState.wait_data:
-                if self._buffer[0] == string_start:
-                    self._parser_states[-1] = ParserState.read_string
-                if self._buffer[0] == error_start:
-                    self._parser_states[-1] = ParserState.read_error
-                if self._buffer[0] == integer_start:
-                    self._parser_states[-1] = ParserState.read_integer
-                if self._buffer[0] == bulk_string_start:
-                    self._parser_states[-1] = ParserState.read_bulk_string_len
-                if self._buffer[0] == array_start:
-                    self._parser_states[-1] = ParserState.read_array_len
-                del self._buffer[0]
-                return parse(_ret)
-            if self._parser_states[-1] == ParserState.read_string:
-                s = self._buffer.readline()
-                if s is not None:
-                    _ret.append(String(data=s))
-                    self._parser_states[-1] = ParserState.wait_data
-                return
-            if self._parser_states[-1] == ParserState.read_error:
-                s = self._buffer.readline()
-                if s is not None:
-                    _ret.append(ReplyError(data=s))
-                    self._parser_states[-1] = ParserState.wait_data
-                return
-            if self._parser_states[-1] == ParserState.read_integer:
-                s = self._buffer.readline()
-                if s is not None:
-                    _ret.append(Integer(data=s))
-                    self._parser_states[-1] = ParserState.wait_data
-                return
-            if self._parser_states[-1] == ParserState.read_bulk_string_len:
-                length = self._buffer.readline()
-                if length is None:  # 长度不够 读不出来
-                    return
-                self._current_lengths[-1] = int(length.decode())  # 字符串长度
-                self._parser_states[-1] = ParserState.read_bulk_string_body
-                return parse(_ret)
-            if self._parser_states[-1] == ParserState.read_bulk_string_body:
-                if self._current_lengths[-1] < 0:
-                    _ret.append(None)
-                    self._parser_states[-1] = ParserState.wait_data
-                    return
-                if len(self._buffer) < self._current_lengths[-1] + 2:
-                    return
-                s = self._buffer.read(self._current_lengths[-1])
+        while True:
+            start = self._buffer[0]
+            if self._parser_state == ParserState.wait_data:
+                if start == string_start:
+                    s = self._buffer.readline()
+                    if s is not None:
+                        s.skip(1)
+                    else:
+                        break
+                    event = String(data=s)
+                    self._events.append(event)
+                    self._events_backup.append(event)
+                if start == error_start:
+                    s = self._buffer.readline()
+                    if s is not None:
+                        s.skip(1)
+                    else:
+                        break
+                    event = ReplyError(data=s)
+                    self._events.append(event)
+                    self._events_backup.append(event)
+                if start == integer_start:
+                    s = self._buffer.readline()
+                    if s is not None:
+                        s.skip(1)
+                    else:
+                        break
+                    event = Integer(data=s)
+                    self._events.append(event)
+                    self._events_backup.append(event)
+                if start == bulk_string_start:
+                    s = self._buffer.readline()
+                    if s is not None:
+                        s.skip(1)
+                    else:
+                        break
+                    length = int(s.decode())
+                    if length < 0:
+                        event = String(data=b"", len=length)
+                        self._events.append(event)
+                        self._events_backup.append(event)
+                    else:
+                        self._current_length = length
+                        self._parser_state = ParserState.read_bulk_string_body
+                if start == array_start:
+                    s = self._buffer.readline()
+                    if s is not None:
+                        s.skip(1)
+                    else:
+                        break
+                    event = Array(len=int(s.decode()))
+                    self._events.append(event)
+                    self._events_backup.append(event)
+
+            if self._parser_state == ParserState.read_bulk_string_body:
+                if len(self._buffer) < self._current_length + 2:
+                    break
+                s = self._buffer.read(self._current_length)
                 if bytes(self._buffer.read(2)) != b"\r\n":
-                    raise ProtocolError("expect \\r\\n at the end of bulk string")
-                _ret.append(String(data=s))
-                self._parser_states[-1] = ParserState.wait_data
-                return
-            if self._parser_states[-1] == ParserState.read_array_len:
-                length = self._buffer.readline()
-                if length is None:  # 长度不够 读不出来
-                    return
-                self._current_lengths[-1] = int(length.decode())  # 字符串长度
-                self._parser_states[-1] = ParserState.read_array_body
-                return parse(_ret)
-            if self._parser_states[-1] == ParserState.read_array_body:
-                tmp = Array()
-                # 保存当前状态机
-                buffer_copy = bytes(self._buffer)
-                arr_len = self._current_lengths[-1]
-                if arr_len < 0:
-                    tmp.len = arr_len
-                    _ret.append(tmp)
-                    self._parser_states[-1] = ParserState.wait_data
-                    return
-
-                self._parser_states.append(ParserState.wait_data)  # 更进一层套娃
-                self._current_lengths.append(None)
-                for _ in range(arr_len):
-                    parse(tmp)
-                    if self._parser_states[-1] != ParserState.wait_data:
-                        self._buffer = Buffer(buffer_copy)  # 数据不够 直接还原buffer todo 多层呢？
-                        del self._parser_states[1:]
-                        del self._current_lengths[1:]
-                        return
-
-                self._parser_states.pop()
-                self._current_lengths.pop()
-                self._parser_states[-1] = ParserState.wait_data
-                tmp.len = len(tmp)
-                _ret.append(tmp)
-
-        ret = []
-        while True:  # 多个消息粘包
-            before = len(self._buffer)
-            parse(ret)
-            if len(self._buffer) == before or not self._buffer:
+                    raise ProtocolError("bulk string should be ended with \\r\\n")
+                self._current_length = None  # reset长度
+                event = String(data=s)
+                self._parser_state = ParserState.wait_data
+                self._events.append(event)
+                self._events_backup.append(event)
+            if not self._buffer:
                 break
 
-        return ret
-
-    def clear(self):
+    def reset(self):
         self._buffer.clear()
+        self._events.clear()
+        self._events_backup.clear()
+        self._parser_state = ParserState.wait_data
+
+    def next_element(self):
+        # events_backup = self._events.copy()
+        try:
+            event = self._events.popleft()
+            self._events_backup.append(event)
+            if isinstance(event, String):
+                event = self.post_processors[String](event)
+            elif isinstance(event, ReplyError):
+                event = self.post_processors[ReplyError](event)
+            elif isinstance(event, Integer):
+                event = self.post_processors[Integer](event)
+            elif isinstance(event, Array):
+                event = self.next_array(event.len)
+
+            if isinstance(event, Exception):
+                raise event
+            else:
+                return event
+        except IndexError:
+            event = self._events_backup.pop()
+            self._events.appendleft(event)
+            raise
+
+    def next_array(self, len_: int):
+        l = []
+        if len_ < 0:  # 长度为-1的array解析成None
+            l = None
+        else:
+            for i in range(len_):
+                l.append(self.next_element())
+        return l
 
     def send_command(self, *cmd) -> bytes:
         pass

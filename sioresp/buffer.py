@@ -2,18 +2,18 @@ from typing import Optional
 
 
 class Buffer(bytearray):
-    def readline(self) -> Optional[bytearray]:
+    def readline(self) -> Optional["Buffer"]:
         idx = self.find(b"\r\n")
         if idx == -1:
             return None
         ret = self[:idx]
         del self[: idx + 2]
-        return ret
+        return Buffer(ret)
 
-    def read(self, nbytes: int) -> bytearray:
+    def read(self, nbytes: int) -> "Buffer":
         ret = self[:nbytes]
         del self[:nbytes]
-        return ret
+        return Buffer(ret)
 
     def skip(self, nbytes: int) -> None:
         del self[:nbytes]
