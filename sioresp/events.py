@@ -3,10 +3,6 @@ import decimal
 from typing import Union, Optional
 
 
-class NeedMoreData:
-    pass
-
-
 @dataclass
 class BaseEvent:
     pass
@@ -25,8 +21,14 @@ class String(BaseEvent):
 
 
 @dataclass
-class ReplyError(BaseEvent, Exception):
+class VerbatimString(String):
+    type: Optional[str] = None
+
+
+@dataclass
+class ReplyError(BaseEvent):
     data: Union[bytes, bytearray]
+    len: Optional[int] = None
 
     def __str__(self):
         return self.data.decode()
@@ -78,25 +80,23 @@ class BigNumber(BaseEvent):  # todo decimal?
 @dataclass
 class Array(BaseEvent):
     len: int
-    data: list = field(default_factory=list)
 
 
 @dataclass
 class Map(BaseEvent):
     len: int
-    data: dict = field(default_factory=dict)
 
 
 @dataclass
 class Set(BaseEvent):
     len: int
-    data: set = field(default_factory=set)
+
+
+@dataclass
+class Attribute(BaseEvent):
+    len: int
 
 
 @dataclass
 class Push(BaseEvent):
     len: int
-    data: set = field(default_factory=list)
-
-
-need_more_data = NeedMoreData()

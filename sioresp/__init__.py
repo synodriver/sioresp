@@ -1,10 +1,11 @@
 from enum import Enum, auto
 from collections import deque
-from typing import Union
+from typing import Union, List, Tuple
 
 from sioresp.config import Config
 from sioresp.buffer import Buffer
-from sioresp.events import BaseEvent, String, ReplyError, Integer, Array, need_more_data
+from sioresp.events import BaseEvent, String, VerbatimString, ReplyError, Integer, Array, Map, Set, Push, Double, \
+    Attribute, Null, Boolean
 from sioresp.exceptions import ProtocolError
 
 try:
@@ -31,25 +32,29 @@ attribute_start = 124  # struct  b"|"
 push_start = 62
 
 CRLF = b"\r\n"
+VALID_START_BYTE = {33, 35, 36, 37, 40, 42, 43, 44, 45, 58, 61, 62, 95, 124, 126}
 
 
 class ParserState(Enum):
     wait_data = auto()  # 现在还没有开始读取
     read_bulk_string_body = auto()
+    read_blob_error_body = auto()
+    read_verbatim_string_body = auto()
 
 
-# def parse_string(x: String):
-#     if x.len is None:
-#         return str(x)
-#     else:
-#         return None
-
+# https://erpeng.github.io/2019/07/12/redis-resp3/
+# https://redis.com.cn/topics/protocol.html#:~:text=Redis%E5%8D%8F%E8%AE%AE%E8%AF%A6%E7%BB%86%E8%A7%84%E8%8C%83%20Redis%E5%AE%A2%E6%88%B7%E7%AB%AF%E5%92%8C%E6%9C%8D%E5%8A%A1%E5%99%A8%E7%AB%AF%E9%80%9A%E4%BF%A1%E4%BD%BF%E7%94%A8%E5%90%8D%E4%B8%BA%20RESP%20%28REdis%20Serialization,Protocol%29%20%E7%9A%84%E5%8D%8F%E8%AE%AE%E3%80%82%20%E8%99%BD%E7%84%B6%E8%BF%99%E4%B8%AA%E5%8D%8F%E8%AE%AE%E6%98%AF%E4%B8%93%E9%97%A8%E4%B8%BARedis%E8%AE%BE%E8%AE%A1%E7%9A%84%EF%BC%8C%E5%AE%83%E4%B9%9F%E5%8F%AF%E4%BB%A5%E7%94%A8%E5%9C%A8%E5%85%B6%E5%AE%83%20client-server%20%E9%80%9A%E4%BF%A1%E6%A8%A1%E5%BC%8F%E7%9A%84%E8%BD%AF%E4%BB%B6%E4%B8%8A%E3%80%82
+# https://www.zeekling.cn/articles/2021/01/10/1610263628832.html#b3_solo_h3_16
 
 class Connection:
     post_processors = {
         String: lambda x: bytes(x) if x.len is None else None,  # len不是None就是-1 这里把-1长度的str也视为None
+        VerbatimString: lambda x: bytes(x) if x.len is None else None,
         ReplyError: lambda x: x,
-        Integer: lambda x: int(x)
+        Integer: lambda x: int(x),
+        Double: lambda x: float(x),
+        Boolean: lambda x: bool(x),
+        Null: lambda x: None
     }
 
     def __init__(self, config: Config):
@@ -66,6 +71,8 @@ class Connection:
 
         while True:
             start = self._buffer[0]
+            if start not in VALID_START_BYTE:
+                raise ProtocolError(f"invalid start byte {chr(start)}")
             if self._parser_state == ParserState.wait_data:
                 if start == string_start:
                     s = self._buffer.readline()
@@ -75,7 +82,6 @@ class Connection:
                         break
                     event = String(data=s)
                     self._events.append(event)
-                    self._events_backup.append(event)
                 if start == error_start:
                     s = self._buffer.readline()
                     if s is not None:
@@ -84,7 +90,6 @@ class Connection:
                         break
                     event = ReplyError(data=s)
                     self._events.append(event)
-                    self._events_backup.append(event)
                 if start == integer_start:
                     s = self._buffer.readline()
                     if s is not None:
@@ -93,7 +98,14 @@ class Connection:
                         break
                     event = Integer(data=s)
                     self._events.append(event)
-                    self._events_backup.append(event)
+                if start == big_number_start:
+                    s = self._buffer.readline()
+                    if s is not None:
+                        s.skip(1)
+                    else:
+                        break
+                    event = Integer(data=s)
+                    self._events.append(event)
                 if start == bulk_string_start:
                     s = self._buffer.readline()
                     if s is not None:
@@ -104,10 +116,63 @@ class Connection:
                     if length < 0:
                         event = String(data=b"", len=length)
                         self._events.append(event)
-                        self._events_backup.append(event)
                     else:
                         self._current_length = length
                         self._parser_state = ParserState.read_bulk_string_body
+                if start == blob_error_start:
+                    s = self._buffer.readline()
+                    if s is not None:
+                        s.skip(1)
+                    else:
+                        break
+                    length = int(s.decode())
+                    if length < 0:
+                        event = ReplyError(data=b"", len=length)
+                        self._events.append(event)
+                    else:
+                        self._current_length = length
+                        self._parser_state = ParserState.read_blob_error_body
+                if start == verbatim_string_start:
+                    s = self._buffer.readline()
+                    if s is not None:
+                        s.skip(1)
+                    else:
+                        break
+                    length = int(s.decode())
+                    if length < 0:
+                        event = VerbatimString(data=b"", len=length)
+                        self._events.append(event)
+                    else:
+                        self._current_length = length
+                        self._parser_state = ParserState.read_verbatim_string_body
+                if start == double_start:
+                    s = self._buffer.readline()
+                    if s is not None:
+                        s.skip(1)
+                    else:
+                        break
+                    event = Double(data=s)  # fixme inf -inf
+                    self._events.append(event)
+                if start == null_start:
+                    s = self._buffer.readline()
+                    if s is not None:
+                        s.skip(1)
+                        if len(s) != 0:
+                            raise ProtocolError("null can't contain any data")
+                    else:
+                        break
+                    event = Null()
+                    self._events.append(event)
+                if start == bool_start:
+                    s = self._buffer.readline()
+                    if s is not None:
+                        s.skip(1)
+                        if bytes(s) not in (b"t", b"f"):
+                            raise ProtocolError("bool must be t or f")
+                    else:
+                        break
+                    event = Boolean(data=s)
+                    self._events.append(event)
                 if start == array_start:
                     s = self._buffer.readline()
                     if s is not None:
@@ -116,19 +181,73 @@ class Connection:
                         break
                     event = Array(len=int(s.decode()))
                     self._events.append(event)
-                    self._events_backup.append(event)
+                if start == map_start:
+                    s = self._buffer.readline()
+                    if s is not None:
+                        s.skip(1)
+                    else:
+                        break
+                    event = Map(len=int(s.decode()))
+                    self._events.append(event)
+                if start == set_start:
+                    s = self._buffer.readline()
+                    if s is not None:
+                        s.skip(1)
+                    else:
+                        break
+                    event = Set(len=int(s.decode()))
+                    self._events.append(event)
+                if start == attribute_start:
+                    s = self._buffer.readline()
+                    if s is not None:
+                        s.skip(1)
+                    else:
+                        break
+                    event = Attribute(len=int(s.decode()))
+                    self._events.append(event)
+                if start == push_start:
+                    s = self._buffer.readline()
+                    if s is not None:
+                        s.skip(1)
+                    else:
+                        break
+                    event = Push(len=int(s.decode()))
+                    self._events.append(event)
 
             if self._parser_state == ParserState.read_bulk_string_body:
                 if len(self._buffer) < self._current_length + 2:
                     break
                 s = self._buffer.read(self._current_length)
                 if bytes(self._buffer.read(2)) != b"\r\n":
-                    raise ProtocolError("bulk string should be ended with \\r\\n")
+                    raise ProtocolError("bulk string should ended with \\r\\n")
                 self._current_length = None  # reset长度
                 event = String(data=s)
                 self._parser_state = ParserState.wait_data
                 self._events.append(event)
-                self._events_backup.append(event)
+
+            if self._parser_state == ParserState.read_verbatim_string_body:
+                if len(self._buffer) < self._current_length + 2:
+                    break
+                s = self._buffer.read(self._current_length)
+                if bytes(self._buffer.read(2)) != b"\r\n":
+                    raise ProtocolError("verbatim string should ended with \\r\\n")
+                self._current_length = None  # reset长度
+                type_, _, data = s.partition(b":")
+                event = VerbatimString(data=data, type=type_)
+                self._parser_state = ParserState.wait_data
+                self._events.append(event)
+
+            if self._parser_state == ParserState.read_blob_error_body:
+                if len(self._buffer) < self._current_length + 2:
+                    break
+                s = self._buffer.read(self._current_length)
+                if bytes(self._buffer.read(2)) != b"\r\n":
+                    raise ProtocolError("blob error should ended with \\r\\n")
+                self._current_length = None  # reset长度
+                event = ReplyError(data=s)
+                self._parser_state = ParserState.wait_data
+                self._events.append(event)
+
             if not self._buffer:
                 break
 
@@ -138,37 +257,77 @@ class Connection:
         self._events_backup.clear()
         self._parser_state = ParserState.wait_data
 
-    def next_element(self):
+    def _next_element(self):
         # events_backup = self._events.copy()
-        try:
-            event = self._events.popleft()
-            self._events_backup.append(event)
-            if isinstance(event, String):
-                event = self.post_processors[String](event)
-            elif isinstance(event, ReplyError):
-                event = self.post_processors[ReplyError](event)
-            elif isinstance(event, Integer):
-                event = self.post_processors[Integer](event)
-            elif isinstance(event, Array):
-                event = self.next_array(event.len)
+        event = self._events.popleft()
+        self._events_backup.append(event)
 
-            if isinstance(event, Exception):
-                raise event
-            else:
-                return event
-        except IndexError:
-            event = self._events_backup.pop()
-            self._events.appendleft(event)
-            raise
+        if isinstance(event, Array):
+            return self._next_array(event.len)
+        elif isinstance(event, Set):
+            return self._next_set(event.len)
+        elif isinstance(event, Map):
+            return self._next_map(event.len)
+        elif isinstance(event, Attribute):
+            return self._next_attribute(event.len)
+        elif isinstance(event, Push):
+            return self._next_push(event.len)
 
-    def next_array(self, len_: int):
+        return self.post_processors[type(event)](event)
+
+    def _next_array(self, len_: int) -> list:
         l = []
         if len_ < 0:  # 长度为-1的array解析成None
             l = None
         else:
             for i in range(len_):
-                l.append(self.next_element())
+                l.append(self._next_element())
         return l
+
+    def _next_set(self, len_: int) -> set:
+        s = set()
+        for i in range(len_):
+            s.add(self._next_element())
+        return s
+
+    def _next_map(self, len_: int) -> List[Tuple]:
+        m = []  # 这里dict解析成 List[Tuple[K, V]] 是因为redis会使用其他的聚合类型当key，可能没法hash
+        for i in range(len_):
+            k = self._next_element()
+            v = self._next_element()
+            m.append((k, v))
+        return m
+
+    def _next_attribute(self, len_: int) -> List[Tuple]:
+        m = []  # attribute当成map处理
+        for i in range(len_):
+            k = self._next_element()
+            v = self._next_element()
+            m.append((k, v))
+        return m
+
+    def _next_push(self, len_: int) -> list:
+        l = []
+        if len_ < 0:  # 长度为-1的array解析成None
+            l = None
+        else:
+            for i in range(len_):
+                l.append(self._next_element())
+        return l
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        try:
+            ele = self._next_element()
+            self._events_backup.clear()  # 没出事
+            return ele
+        except IndexError:
+            while self._events_backup:  # 出事了 不够数据 恢复栈
+                event = self._events_backup.pop()
+                self._events.appendleft(event)
+            raise StopIteration
 
     def send_command(self, *cmd) -> bytes:
         pass
