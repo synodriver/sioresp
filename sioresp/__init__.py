@@ -1,6 +1,7 @@
 from enum import Enum, auto
 from collections import deque
-from typing import Union, List, Tuple
+from typing import Union, List, Tuple, Any, Sequence
+from io import BytesIO
 
 from sioresp.config import Config
 from sioresp.buffer import Buffer
@@ -10,7 +11,6 @@ from sioresp.exceptions import ProtocolError
 
 try:
     import hiredis
-    import redis
 except:
     hiredis = None
 
@@ -258,7 +258,6 @@ class Connection:
         self._parser_state = ParserState.wait_data
 
     def _next_element(self):
-        # events_backup = self._events.copy()
         event = self._events.popleft()
         self._events_backup.append(event)
 
@@ -329,9 +328,185 @@ class Connection:
                 self._events.appendleft(event)
             raise StopIteration
 
+    def pack_string(self, string: Union[str, bytes, bytearray]) -> bytes:
+        return f"+{string}\r\n".encode(self.config.encoding,
+                                       self.config.errors) if isinstance(string, str) else b"+%s\r\n" % string
+
+    def pack_bulk_string(self, string: Union[str, bytes, bytearray]) -> bytes:
+        if isinstance(string, str):
+            string = string.encode(self.config.encoding, self.config.errors)
+        return b"$%d\r\n%s\r\n" % (len(string), string)
+
+    def pack_error(self, err: Union[str, bytes, bytearray]) -> bytes:
+        return f"-{err}\r\n".encode(self.config.encoding,
+                                    self.config.errors) if isinstance(err, str) else b"-%s\r\n" % err
+
+    def pack_integer(self, ele: int) -> bytes:
+        return f":{ele}\r\n".encode(self.config.encoding, self.config.errors)
+
+    def pack_double(self, ele: float) -> bytes:
+        """
+        resp 3
+        :param ele:
+        :return:
+        """
+        return b",%s\r\n" % str(ele).encode()
+
+    def pack_boolean(self, ele: bool) -> bytes:
+        """
+        resp 3
+        :param ele:
+        :return:
+        """
+        return b"#t\r\n" if ele else b"#f\r\n"
+
+    def pack_blob_error(self, err: Union[str, bytes, bytearray]) -> bytes:
+        """
+        resp 3
+        :param err:
+        :return:
+        """
+        if isinstance(err, str):
+            err = err.encode(self.config.encoding, self.config.errors)
+        return b"!%d\r\n%s\r\n" % (len(err), err)
+
+    def pack_verbatim_string(self, type_: Union[str, bytes, bytearray],
+                             string: Union[str, bytes, bytearray]) -> bytes:
+        """
+        resp 3
+        :param type_:
+        :param string:
+        :return:
+        """
+        if isinstance(string, str):
+            string = string.encode(self.config.encoding, self.config.errors)
+        if isinstance(type_, str):
+            type_ = type_.encode(self.config.encoding, self.config.errors)
+        string = type_ + b":" + string
+        return b"=%d\r\n%s\r\n" % (len(string), string)
+
+    def pack_big_number(self, number: Union[int, str, bytes, bytearray]) -> bytes:
+        """
+        resp 3
+        :param number:
+        :return:
+        """
+        if isinstance(number, int):
+            return b"(%d\r\n" % number
+        elif isinstance(number, str):
+            number = number.encode(self.config.encoding, self.config.errors)
+        return b"(%s\r\n" % number
+
+    def pack_null(self) -> bytes:
+        return b"$-1\r\n" if self.config.resp_version == 2 else b"_\r\n"
+
+    def pack_array(self, arr: Union[List, Tuple]) -> bytes:
+        ret = BytesIO()
+        ret.write(b"*%d\r\n" % len(arr))  # arr's len prefix
+        for i in arr:
+            ret.write(self.pack_element(i))
+        return ret.getvalue()
+
+    def pack_map(self, map: Union[dict, Sequence[Tuple[Any, Any]]]) -> bytes:
+        """
+        resp 3
+        :param map:
+        :return:
+        """
+        ret = BytesIO()
+        ret.write(b"%")
+        ret.write(b"%d\r\n" % len(map))
+        if isinstance(map, dict):
+            map = map.items()
+        for k, v in map:
+            ret.write(self.pack_element(k))
+            ret.write(self.pack_element(v))
+        return ret.getvalue()
+
+    def pack_set(self, ele: set) -> bytes:
+        """
+        resp 3
+        :param ele:
+        :return:
+        """
+        ret = BytesIO()
+        ret.write(b"~%d\r\n" % len(ele))
+        for i in ele:
+            ret.write(self.pack_element(i))
+        return ret.getvalue()
+
+    def pack_attribute(self, attr: Union[dict, Sequence[Tuple[Any, Any]]]) -> bytes:
+        """
+        resp 3
+        :param attr:
+        :return:
+        """
+        ret = BytesIO()
+        ret.write(b"|%d\r\n" % len(attr))
+        if isinstance(attr, dict):
+            attr = attr.items()
+        for k, v in attr:
+            ret.write(self.pack_element(k))
+            ret.write(self.pack_element(v))
+        return ret.getvalue()
+
+    def pack_push(self, push: Union[List, Tuple]) -> bytes:
+        """
+        resp 3
+        :param push: like that in array
+        :return:
+        """
+        if self.config.resp_version == 2:
+            raise ProtocolError("resp version2 doesn't support push type")
+        ret = BytesIO()
+        ret.write(b">%d\r\n" % len(push))  # push's len prefix
+        for i in push:
+            ret.write(self.pack_element(i))
+        return ret.getvalue()
+
+    def pack_element(self, ele: Any) -> bytes:
+        """
+        this method could be rewrite in subclasses to have different strategies
+        :param ele:
+        :return:
+        """
+        if isinstance(ele, (str, bytes, bytearray)):
+            return self.pack_bulk_string(ele)
+        elif isinstance(ele, int):
+            if self.config.resp_version == 2:
+                return self.pack_integer(ele)
+            else:
+                return self.pack_big_number(ele)
+        elif isinstance(ele, float):
+            if self.config.resp_version == 2:
+                return self.pack_string(str(ele))
+            else:
+                return self.pack_double(ele)
+        elif isinstance(ele, bool):
+            if self.config.resp_version == 3:
+                return self.pack_boolean(ele)
+            else:
+                raise ProtocolError("resp version2 doesn't support bool type")
+        elif isinstance(ele, (list, tuple)):
+            return self.pack_array(ele)
+        elif isinstance(ele, dict):
+            if self.config.resp_version == 3:
+                return self.pack_map(ele)
+            else:
+                raise ProtocolError("resp version2 doesn't support map type")
+        elif isinstance(ele, set):
+            if self.config.resp_version == 3:
+                return self.pack_set(ele)
+            else:
+                raise ProtocolError("resp version2 doesn't support set type")
+        elif ele is None:
+            return self.pack_null()
+
     def send_command(self, *cmd) -> bytes:
-        pass
+        if len(cmd) == 1:
+            return self.pack_element(cmd[0])
+        return self.pack_element(cmd)
 
 
 class HiredisConnection(Connection):
-    pass
+    pass  # todo

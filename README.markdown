@@ -14,9 +14,14 @@ next(c) # raise StopIteration
 c.feed_data(b"~5\r\n+orange\r\n+apple\r\n#t\r\n:100\r\n:999\r\n")
 data = next(c)
 
+c.send_command("GET", "key")
+
 ```
 
 ### TODO
 
 - [x] 反序列化
-- [ ] 序列化
+- [x] 序列化
+- [x] 单元测试
+- [ ] hiredis加速
+- [ ] 文档
