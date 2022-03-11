@@ -1,48 +1,30 @@
 from unittest import TestCase
 
-from sioresp import Connection, Config, ParserState
+from sioresp import HiredisConnection, Config, ParserState
 from sioresp.events import String, ReplyError, Integer
 from sioresp.exceptions import ProtocolError
 
 
 class TestParse(TestCase):
     def setUp(self) -> None:
-        self.con = Connection(Config())
+        self.con = HiredisConnection(Config())
 
     def test_str(self):
         self.con.feed_data(b"+OK\r\n")
         data = self.con.__next__()
         self.assertEqual(data, b"OK")
-        self.assertEqual(len(self.con._buffer), 0)
-        self.assertEqual(len(self.con._events), 0)
-        self.assertEqual(len(self.con._events_backup), 0)
-        self.assertEqual(self.con._parser_state, ParserState.wait_data)
-        self.con.reset()
-        self.assertEqual(self.con._parser_state, ParserState.wait_data)
 
     def test_error(self):
         self.con.feed_data(b"-Error message\r\n")
         e = self.con.__next__()
         self.assertEqual(str(e), "Error message")
         self.assertEqual(type(e), ReplyError)
-        self.assertEqual(len(self.con._buffer), 0)
-        self.assertEqual(len(self.con._events), 0)
-        self.assertEqual(len(self.con._events_backup), 0)
-        self.assertEqual(self.con._parser_state, ParserState.wait_data)
-        self.con.reset()
-        self.assertEqual(self.con._parser_state, ParserState.wait_data)
 
     def test_integer(self):
         self.con.feed_data(b":1000\r\n")
         data = self.con.__next__()
         self.assertEqual(data, 1000)
         self.assertEqual(type(data), int)
-        self.assertEqual(len(self.con._buffer), 0)
-        self.assertEqual(len(self.con._events), 0)
-        self.assertEqual(len(self.con._events_backup), 0)
-        self.assertEqual(self.con._parser_state, ParserState.wait_data)
-        self.con.reset()
-        self.assertEqual(self.con._parser_state, ParserState.wait_data)
 
     def test_bulkstring(self):
         self.con.feed_data(b"$8\r\nfoo\r\nbar\r\n")
@@ -60,13 +42,6 @@ class TestParse(TestCase):
         self.con.feed_data(b"$0\r\n\r\n")
         data = self.con.__next__()
         self.assertEqual(data, b"")
-        self.assertEqual(type(data), bytes)
-        self.assertEqual(len(self.con._buffer), 0)
-        self.assertEqual(len(self.con._events), 0)
-        self.assertEqual(len(self.con._events_backup), 0)
-        self.assertEqual(self.con._parser_state, ParserState.wait_data)
-        self.con.reset()
-        self.assertEqual(self.con._parser_state, ParserState.wait_data)
 
     def test_nonelbulkstring(self):
         self.con.feed_data(b"$-1\r\n")
@@ -140,44 +115,20 @@ class TestParse(TestCase):
         self.con.feed_data(b"#t\r\n")
         data = next(self.con)
         self.assertEqual(data, True)
-        self.assertEqual(len(self.con._buffer), 0)
-        self.assertEqual(len(self.con._events), 0)
-        self.assertEqual(len(self.con._events_backup), 0)
-        self.assertEqual(self.con._parser_state, ParserState.wait_data)
-        self.con.reset()
-        self.assertEqual(self.con._parser_state, ParserState.wait_data)
 
         self.con.feed_data(b"#f\r\n")
         data = next(self.con)
         self.assertEqual(data, False)
-        self.assertEqual(len(self.con._buffer), 0)
-        self.assertEqual(len(self.con._events), 0)
-        self.assertEqual(len(self.con._events_backup), 0)
-        self.assertEqual(self.con._parser_state, ParserState.wait_data)
-        self.con.reset()
-        self.assertEqual(self.con._parser_state, ParserState.wait_data)
 
     def test_null(self):
         self.con.feed_data(b"_\r\n")
         data = next(self.con)
         self.assertEqual(data, None)
-        with self.assertRaises(ProtocolError):
-            self.con.feed_data(b"__\r\n")
-            data = next(self.con)
-            self.con.reset()
-        self.assertEqual(len(self.con._buffer), 0)
-        self.assertEqual(len(self.con._events), 0)
-        self.assertEqual(len(self.con._events_backup), 0)
-        self.assertEqual(self.con._parser_state, ParserState.wait_data)
 
     def test_bignumber(self):
         self.con.feed_data(b"(3492890328409238509324850943850943825024385\r\n")
         data = next(self.con)
         self.assertEqual(data, 3492890328409238509324850943850943825024385)
-        self.assertEqual(len(self.con._buffer), 0)
-        self.assertEqual(len(self.con._events), 0)
-        self.assertEqual(len(self.con._events_backup), 0)
-        self.assertEqual(self.con._parser_state, ParserState.wait_data)
 
     def test_map(self):
         self.con.feed_data(b"%2\r\n+first\r\n:1\r\n+second\r\n:2\r\n")
@@ -195,7 +146,7 @@ class TestParse(TestCase):
     def test_set(self):
         self.con.feed_data(b"~5\r\n+orange\r\n+apple\r\n#t\r\n:100\r\n:999\r\n")
         data = next(self.con)
-        self.assertEqual(data, {True, 100, 999, b'apple', b'orange'} )
+        self.assertEqual(data, {True, 100, 999, b'apple', b'orange'})
 
         self.assertEqual(len(self.con._buffer), 0)
         self.assertEqual(len(self.con._events), 0)

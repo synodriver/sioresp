@@ -27,11 +27,11 @@ class VerbatimString(String):
 
 @dataclass
 class ReplyError(BaseEvent):
-    data: Union[bytes, bytearray]
+    data: Union[bytes, bytearray, str]
     len: Optional[int] = None
 
     def __str__(self):
-        return self.data.decode()
+        return self.data if isinstance(self.data, str) else self.data.decode()
 
     def __bytes__(self):
         return bytes(self.data)

@@ -21,6 +21,12 @@ class TestPack(TestCase):
         data = next(self.con)
         self.assertEqual(data, [(b'key', b'val')])
 
+    def test_push(self):
+        data = self.con.pack_push([1, 2, 3])
+        self.con.feed_data(data)
+        data = next(self.con)
+        self.assertEqual(data, [1, 2, 3])
+
     def test_packstring(self):
         data = self.con.pack_string("OK")
         self.assertEqual(data, b"+OK\r\n")

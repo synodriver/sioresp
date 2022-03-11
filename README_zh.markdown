@@ -1,8 +1,8 @@
 # sioresp
 
-### sans-io style redis protocol parser for respv2 and v3
+### sans-io风格的redis协议解析器 支持resp2 resp3
 
-# usage
+# 使用
 
 ```python
 from sioresp import Connection, Config
@@ -23,14 +23,10 @@ data = c.send_command("GET", "key")
 assert data == b'*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n'
 ```
 
-#### Note:
-
-- You can subclass Connection class to rewrite pack_element method to have customs serialize strategies.
-
 ### TODO
 
-- [x] deserialize
-- [x] serialize
-- [x] unitest
-- [ ] hiredis parser
-- [ ] docs
+- [x] 反序列化
+- [x] 序列化
+- [x] 单元测试
+- [ ] hiredis加速
+- [ ] 文档

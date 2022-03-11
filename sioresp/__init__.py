@@ -289,12 +289,19 @@ class Connection:
             s.add(self._next_element())
         return s
 
-    def _next_map(self, len_: int) -> List[Tuple]:
-        m = []  # 这里dict解析成 List[Tuple[K, V]] 是因为redis会使用其他的聚合类型当key，可能没法hash
-        for i in range(len_):
-            k = self._next_element()
-            v = self._next_element()
-            m.append((k, v))
+    def _next_map(self, len_: int) -> Union[List[Tuple], dict]:
+        if self.config.dict_for_map:
+            m = {}
+            for i in range(len_):
+                k = self._next_element()
+                v = self._next_element()
+                m[k] = v
+        else:
+            m = []  # List[Tuple[K, V]] cause redis could use something unhashable as key
+            for i in range(len_):
+                k = self._next_element()
+                v = self._next_element()
+                m.append((k, v))
         return m
 
     def _next_attribute(self, len_: int) -> List[Tuple]:
@@ -508,5 +515,20 @@ class Connection:
         return self.pack_element(cmd)
 
 
-class HiredisConnection(Connection):
-    pass  # todo
+if hiredis is not None:
+    class HiredisConnection(Connection):
+        def __init__(self, config: Config):
+            self.config = config
+            self.reader = hiredis.Reader(ProtocolError, ReplyError, notEnoughData=StopIteration)
+
+        def feed_data(self, data: Union[bytes, bytearray]) -> None:
+            self.reader.feed(data)
+
+        def __next__(self):
+            data = self.reader.gets()
+            if data is StopIteration:
+                raise data
+            return data
+
+        def reset(self):
+            pass
