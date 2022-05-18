@@ -155,22 +155,20 @@ class Connection:
                     self._events.append(event)
                 if start == null_start:
                     s = self._buffer.readline()
-                    if s is not None:
-                        s.skip(1)
-                        if len(s) != 0:
-                            raise ProtocolError("null can't contain any data")
-                    else:
+                    if s is None:
                         break
+                    s.skip(1)
+                    if len(s) != 0:
+                        raise ProtocolError("null can't contain any data")
                     event = Null()
                     self._events.append(event)
                 if start == bool_start:
                     s = self._buffer.readline()
-                    if s is not None:
-                        s.skip(1)
-                        if bytes(s) not in (b"t", b"f"):
-                            raise ProtocolError("bool must be t or f")
-                    else:
+                    if s is None:
                         break
+                    s.skip(1)
+                    if bytes(s) not in (b"t", b"f"):
+                        raise ProtocolError("bool must be t or f")
                     event = Boolean(data=s)
                     self._events.append(event)
                 if start == array_start:
@@ -279,26 +277,23 @@ class Connection:
         if len_ < 0:  # 长度为-1的array解析成None
             l = None
         else:
-            for i in range(len_):
+            for _ in range(len_):
                 l.append(self._next_element())
         return l
 
     def _next_set(self, len_: int) -> set:
-        s = set()
-        for i in range(len_):
-            s.add(self._next_element())
-        return s
+        return {self._next_element() for _ in range(len_)}
 
     def _next_map(self, len_: int) -> Union[List[Tuple], dict]:
         if self.config.dict_for_map:
             m = {}
-            for i in range(len_):
+            for _ in range(len_):
                 k = self._next_element()
                 v = self._next_element()
                 m[k] = v
         else:
             m = []  # List[Tuple[K, V]] cause redis could use something unhashable as key
-            for i in range(len_):
+            for _ in range(len_):
                 k = self._next_element()
                 v = self._next_element()
                 m.append((k, v))
@@ -306,7 +301,7 @@ class Connection:
 
     def _next_attribute(self, len_: int) -> List[Tuple]:
         m = []  # attribute当成map处理
-        for i in range(len_):
+        for _ in range(len_):
             k = self._next_element()
             v = self._next_element()
             m.append((k, v))
@@ -317,7 +312,7 @@ class Connection:
         if len_ < 0:  # 长度为-1的array解析成None
             l = None
         else:
-            for i in range(len_):
+            for _ in range(len_):
                 l.append(self._next_element())
         return l
 
@@ -510,9 +505,7 @@ class Connection:
             return self.pack_null()
 
     def send_command(self, *cmd) -> bytes:
-        if len(cmd) == 1:
-            return self.pack_element(cmd[0])
-        return self.pack_element(cmd)
+        return self.pack_element(cmd[0]) if len(cmd) == 1 else self.pack_element(cmd)
 
 
 if hiredis is not None:
